@@ -1,0 +1,644 @@
+---
+title: 'California Housing Pricing'
+author: 'Héctor Cuevas Pérez'
+date: 'August 2022'
+output:
+  html_document:
+    number_sections: true
+    toc: true
+    fig_width: 7
+    fig_height: 4.5
+    theme: readable
+    highlight: tango
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+# Introduction
+
+I´ve been for a quite a while playing with data. Professionaly and as a
+hobbyist. Most of my work with data professionally speaking has been
+related to modelization and visualization of data. Closer to what a data
+analyst/data engineer would do. As a hobbyist I have been learning data
+science on my own. Recently I have decided to go more into a data
+analyst/data scientist role. So here is my first notebook in kaggle to
+get the handle of it. I hope to keep adding regularly more of this.
+
+As a first one I will keep it simple. I will focus in showing and
+ilustrating the process. I'll then apply a few different techniques to
+create models to predict the survival.
+
+All right! Let's get to it!
+
+The main phases I will be doing are:
+
+-   Exploring the data
+-   Data preprocessing
+-   Feature Engineering
+    -   Dummy Features
+    -   Missing values
+    -   Normalizing the features
+-   Creating the models
+-   Linear Regresion
+-   Random Forrest
+
+# Data Source
+
+The data is obtained from
+"<https://www.kaggle.com/datasets/camnugent/california-housing-prices>".
+Be careful because it may not matched exactly with the most up to date
+data on the online resource.
+
+As we have a copy of the data it does not really matter on our case.
+
+we used the command
+
+``` (bash)
+kaggle datasets download -d camnugent/california-housing-prices
+```
+
+# Exploring the data
+
+## Load and check data
+
+```{r message=FALSE}
+# Load packages
+library(tidyverse)
+library(maps)
+library(mapproj)
+library(conflicted) # to help with conflicted names
+
+library(raster)
+
+library(corrr)
+
+library(workflows)
+library(recipes)
+library(rsample)
+library(parsnip)
+library(recipes)
+library(magrittr)
+library(yardstick)
+library(rpart)
+library(rpart.plot)
+library(tune)
+library(dials)
+
+library(tmap)    # for static and interactive maps
+library(leaflet) # for interactive maps
+library(ggplot2) # tidyverse data visualization package
+
+# Plotly
+suppressPackageStartupMessages(library(plotly))
+
+# Handling conflicts
+conflict_prefer("select", "dplyr")
+conflict_prefer("filter", "dplyr")
+```
+
+Load the data and create a single dataframe for train and test. That is
+because we need to clean and transform all the data. Later on it will be
+split again into train and test.
+
+```{r, message=FALSE, warning=FALSE}
+
+initial_df <- read_csv(
+  "./data/housing.csv"
+)
+
+glimpse(initial_df)
+#full  <- bind_rows(train, test) # bind training & test data
+
+# check data
+# str(full)
+```
+
+The next step should be really added to the data pipelines , to the recipes that we will be creating later on, but as I could not solve a problem I will do it here. It is to replace NA in numeric columns with the median value.
+
+```{r, message=FALSE, warning=FALSE}
+## initial_df <- mutate_if(initial_df, is.numeric, ~replace_na(.,median(., na.rm = TRUE)))
+```
+
+As prevention data snooping bias we divide the data into train and testing as soon as possible.
+
+```{r, message=FALSE, warning=FALSE}
+
+# Fix the random numbers by setting the seed 
+# This enables the analysis to be reproducible when random numbers are used 
+set.seed(222)
+
+# Put 3/4 of the data into the training set 
+data_split <- initial_split(initial_df, prop = 3/4)
+
+# Create data frames for the two sets:
+train_data <- training(data_split)
+test_data  <- testing(data_split)
+```
+
+
+Let's have a look to some rows. Each row represents one district. There
+are 10 attributes (you can see the first 6 in the screenshot):
+longitude, latitude, housing_median_age, total_rooms, total_bed rooms,
+population, households, median_income, median_house_value, and
+ocean_proximity.
+
+initial_df %\>% select(-c("ocean_proximity")) %\>% pivot_longer() %\>%
+ggplot(aes(x = value)) + geom_histogram( aes(fill = factor(Client) )) +
+facet_wrap(.\~Client,scales = 'free')
+
+```{r, message=FALSE, warning=FALSE}
+
+# Show the first lines
+head(train_data)
+
+# A bit information about the features in the data set
+summary(train_data)
+
+# Print a histogram of each feature
+all_num_columns_df <- select(train_data, -c("ocean_proximity"))
+
+glimpse(all_num_columns_df)
+
+dd <- pivot_longer(all_num_columns_df, everything())
+
+train_data %>%
+  select(-c("ocean_proximity")) %>%
+  pivot_longer(everything()) %>%
+  ggplot(aes(x = value)) +
+  geom_histogram( aes(fill = factor(name) )) +
+  facet_wrap(~name,scales = 'free')
+
+
+```
+
+Let's visualize the data in a map to get a sense of it. Using
+transparency because there is a high density of values, and it helps to
+visualize them clearer.
+
+```{r, message=FALSE, warning=FALSE}
+
+options(repr.plot.width = 10, repr.plot.height = 20)
+
+map_houses <- ggplot(train_data) +
+  geom_point(mapping= aes(x = longitude, y = latitude, alpha=0.1, size=population, colour=median_house_value)) +
+  labs(alpha = NULL) +
+  labs(colour = "Median House Value")
+
+map_houses
+
+```
+
+We can observe here that the housing prices are quite related to their location, (especially if close to the ocean).
+
+## Correlation
+
+Next, we are going to explore the correlations of all the variables with the mean house price, see if that give us some overall picture. This helps to get to familiarize ourselves with the data and their relative importance. Even though, of course, then we will have to make a more thoroughly mathematical work to find out their relationships and how strong they are. 
+But for the time being, let's just look at the pearson matrix correlation.
+Bear in mind that it will only show linear correlation, two variables can have zero linear correlation but be correlated in a more complex way.
+
+```{r, message=FALSE, warning=FALSE}
+
+correlation_df <- 
+  train_data %>% 
+  correlate() %>%  
+  focus(median_house_value)  %>% 
+  arrange(median_house_value)
+  
+fashion(correlation_df)
+```
+The coefficient goes from -1 to 1. -1 indicates strong negative correlation and 1 indicates strong positive correlation. the positive 0.69 correlation between median_income and median_house_value indicates that generally the higher the median_income the higher that the median_house_value will be. What really makes a lot of sense right?
+
+If the value is close to zero it indicates there is no correlation, like the latitude and the longitude do not seem to be correlated to median_house_value.
+
+Lets show the scatter plots of these variables to explore the possible correlations in a more graphical way.
+
+```{r, message=FALSE, warning=FALSE}
+
+train_data %>%
+  select(-ocean_proximity) %>%
+  gather(-median_house_value, key = "var", value = "value") %>% 
+  ggplot(aes(x = value, y = median_house_value)) +
+    geom_point( color="blue", size=0.1) +
+    facet_wrap(~var, scales = "free") +
+    labs(title = "Variables vs House Median Value")
+    theme_bw()
+```
+
+As the median_income attribute seems the most correlated lest focus into it:
+
+```{r, message=FALSE, warning=FALSE}
+
+train_data %>%
+  ggplot(aes(x = median_income, y = median_house_value)) +
+    geom_point( color="blue", alpha=0.1) +
+    theme_bw()
+```
+
+There is a cap on the median_house_value and it can be easily appreciated on the graph above. Also there some strange horizontal lines at different values of median_house_value. It is probably a good idea to try to identify data lines and remove them from the model, so we dont let our model to learn to reproduce them.
+
+## Second look to the atributes
+
+That was an overview of the data, let`s revisit the attributes and see if they make sense of it would be a good idea to make some transformations or calculations on them.
+
+- total_rooms does not make sense to predict the value of a house, so we calculate the number of rooms per household -> rooms_per_household
+- total_bedrooms, same thing we create -> bedrooms_per_room
+- population , same here so -> population_per_household
+
+We add these new columns. After that we recalculate the correlation with this new variables.
+
+```{r, message=FALSE, warning=FALSE}
+
+# Adding new columns
+new_vars_df <-
+  train_data %>%
+  add_column(
+    rooms_per_household = .$total_rooms / .$households,
+    bedrooms_per_household = .$total_bedrooms / .$households,
+    population_per_household = .$population / .$households,
+  )
+
+# Correlation
+
+correlation_df <- 
+  new_vars_df %>% 
+  correlate() %>%  
+  focus(median_house_value)  %>% 
+  arrange(median_house_value)
+  
+fashion(correlation_df)
+
+
+```
+
+Well, we can see there is more correlation with bedrooms_per_room that with total_bedrooms, what is not surprise, because theres more information coming from the average number of bedrooms per household. Also it makes sense that the more bedrooms the more expensive the house is.
+
+### Handling missing features
+As most ML algorithms can not work with missing values we will handle them.
+
+We have 3 options:
+
+- Get rid of the row (of the district really)
+- Get rid of the whole attribute
+- Set the values to some value (zero, the mean, the median, etc.)
+
+On our case we will use the median value for the missing values for all numerical attributes.
+
+```{r, message=FALSE, warning=FALSE}
+
+nas_to_median_df <- new_vars_df %>% 
+  mutate_if(is.numeric, ~replace_na(.,median(., na.rm = TRUE)))
+
+nas_to_median_df
+
+```
+
+
+# Feature Engineering & Data Pipeline (recipe)
+
+After this bit of exploring we are going to be more structured and we will be preparing the data to build the model or models.
+
+Basically we will create a data pipeline where we will do all the feature engineering necessary to prepare the data for the model. Different models will need to make some adjustments to the data preparation.
+
+This pipeline can be acomplished in r through a recipe. Some of the steps we have already done them in a more direct way on the code above. Now we will create the recipe with those steps and some more.
+
+The advantage of creating recipes (pipelines) is that it allows to test different strategies or transformations on the models, so it is easier to compare two different recipes with the same model.
+
+The idea is behind this is to have a very flexible enviroment that allows to explore different posibbilities in a easy way.
+
+Lets create a recipe for all the steps to prepare the data.
+
+### Attributes as Factors
+
+For the lm model we want to create later on, and in general for all models, we convert the character variables to factors.
+
+```{r, eval=FALSE}
+housing_recipe <- 
+  recipe(median_house_value ~ ., data = train_data) %>%  # Create recipe
+  step_mutate_at(where(is.character), fn = as.factor)
+```  
+  
+### Attributes not used in Model
+
+Tag attributes that wont be used in the model but we want to keep them for maybe comparing them to the predictions or to be used after the predictions are done for plotting or other uses. In our case we consider that the latitude , longitude do not add much prediction value.
+
+```{r, eval=FALSE}
+housing_recipe <- 
+  recipe(median_house_value ~ ., data = train_data) %>%  # Create recipe
+  step_mutate_at(where(is.character), fn = as.factor)
+  update_role(longitude, latitude, new_role = "Extras") 
+```
+
+### Handle missing features
+
+Add the step done before. Substitute missing values by the mean of the attribute. Only for numeric attributes. We dont analyze attribute by attribute as the focus is this exercise is in reproducing more or less the example in the r language rather than in python.
+
+```{r, eval=FALSE}
+housing_recipe <- 
+  recipe(median_house_value ~ ., data = train_data) %>%  # Create recipe
+  step_mutate_at(where(is.character), fn = as.factor)
+  update_role(longitude, latitude, new_role = "Extras") 
+  step_impute_mean(total_bedrooms) %>% 
+```
+
+### Creating new features
+
+As stated before some of the features do not make sense to use. The ones that give the totals of the district do not help in predicting the price of the househols. We created new measures that give the information per household on each district.
+
+- total_rooms does not make sense to predict the value of a house, so we calculate the number of rooms per household -> rooms_per_household
+- total_bedrooms, same thing we create -> bedrooms_per_room
+- population , same here so -> population_per_household
+
+
+```{r, eval=FALSE}
+housing_recipe <- 
+  recipe(median_house_value ~ ., data = train_data) %>%  # Create recipe
+  step_mutate_at(where(is.character), fn = as.factor) %>% 
+  update_role(longitude, latitude, new_role = "Extras") %>% 
+  step_impute_mean(total_bedrooms) %>% 
+  step_mutate(
+    rooms_per_household = total_rooms / households,
+    bedrooms_per_household = total_bedrooms / households,
+    population_per_household = population / households,
+  )
+```
+
+### Handling qualitative features
+
+We will handle our factor feature using the technique called one-hot encoding or dummy variables.
+
+
+```{r, eval=FALSE}
+housing_recipe <- 
+  recipe(median_house_value ~ ., data = train_data) %>%  # Create recipe
+  step_mutate_at(where(is.character), fn = as.factor) %>% 
+  update_role(longitude, latitude, new_role = "Extras") %>% 
+  step_impute_mean(total_bedrooms) %>% 
+  step_mutate(
+    rooms_per_household = total_rooms / households,
+    bedrooms_per_household = total_bedrooms / households,
+    population_per_household = population / households,
+  ) %>% 
+  step_dummy(all_nominal_predictors())
+```
+
+### Feature Scaling
+
+The ML algorithms do not most of the time handle well that the numeric features have very different scales. For instance total number of rooms ranges from about 6 to 39,320, while the median incomes only range from 0 to 15. 
+
+We will use the standardization method that will normalize numeric data to have a standard deviation of one and a mean of zero.
+
+
+```{r, message=FALSE, warning=FALSE}
+housing_recipe <- 
+  recipe(median_house_value ~ ., data = train_data) %>%  # Create recipe
+  update_role(longitude, latitude, new_role = "Extras") %>% 
+  step_mutate_at(where(is.character), fn = as.factor) %>% 
+  step_impute_mean(total_bedrooms) %>% 
+  step_mutate(
+    rooms_per_household = total_rooms / households,
+    bedrooms_per_household = total_bedrooms / households,
+    population_per_household = population / households,
+  ) %>% 
+  step_dummy(all_nominal_predictors()) %>% 
+  step_normalize(all_numeric_predictors())
+```
+
+# Create and Train a Model
+
+Finally we will create a model and train it.
+
+In R we can use a *model workflow* which pairs a model and recipe together. Using *model workflow* becomes easier to train and test workflows. This help to organize recipes and models and try out different pairings in an organized way.
+
+Let's create the model 
+
+```{r, message=FALSE, warning=FALSE}
+housing_lr_mod <- 
+  linear_reg() %>% 
+  set_engine("lm")
+```
+
+and the *model workflow*
+
+```{r, message=FALSE, warning=FALSE}
+housing_workflow <- 
+  workflow() %>% 
+  add_model(housing_lr_mod) %>% 
+  add_recipe(housing_recipe)
+
+housing_workflow
+```
+## Train the model
+
+```{r, message=FALSE, warning=FALSE}
+housing_fit <- 
+  housing_workflow %>% 
+  fit(data = train_data)
+
+```
+
+And the coeffcients associated to this trained model are:
+
+
+```{r, message=FALSE, warning=FALSE}
+housing_fit %>% 
+  extract_fit_parsnip() %>% 
+  tidy()
+```
+## Prediction
+
+And finally we can make some predictions!
+
+First we will pick some predictions with a small set and compare them with the actual values. Just to have a feeling of how well it worked.
+
+```{r, message=FALSE, warning=FALSE}
+housing_small_set <- slice_head(initial_df, n = 5)
+
+housing_small_set_prediction <- predict(housing_fit, housing_small_set)
+
+# dataframe with actual vs predictions
+
+comparing_values_df <- 
+  bind_cols(housing_small_set, housing_small_set_prediction) %>% 
+  select(median_house_value, .pred)
+
+comparing_values_df
+
+```
+
+It is looking pretty good. 
+
+Let's see what is this model's RMSE on the whole training set.
+
+```{r, message=FALSE, warning=FALSE}
+housing_train_pred_rmse <- 
+  predict(housing_fit, train_data) %>% 
+  bind_cols(train_data) %>% 
+  rmse(median_house_value, .pred)
+
+housing_train_pred_rmse
+```
+
+The RMSE vakue is not a great score. Seems to be an underfitting model. So what now?
+
+Now we try to fit the data with some more complex models and we will see if they fare better than this one.
+
+### Predictions with other models
+
+Here is where the work of creating the pipeline comes to fruction. We can reuse our pipeline for all the new workflows we will build with these models. So is going to pretty easy to try out them.
+
+#### Decision Tree Regressor
+
+Decisión trees are used often for clasification, but as we shown here they can be use to solve regression problems. 
+Let's show how to do it. On this example we just tweak the complexity hyperparameter. 
+
+
+```{r, message=FALSE, warning=FALSE}
+
+# Model
+housing_decision_tree_mod <- 
+   decision_tree(cost_complexity = 0.001) %>% 
+   set_engine("rpart") %>% 
+   set_mode("regression")
+
+# Workflow
+housing_decision_tree_workflow <- 
+  workflow() %>% 
+  add_model(housing_decision_tree_mod) %>% 
+  add_recipe(housing_recipe)
+
+# Fit Model
+housing_decision_tree_fit <- 
+  housing_decision_tree_workflow %>% 
+  fit(data = train_data)
+
+# Plot Decision Tree
+housing_decision_tree_fit %>% 
+  extract_fit_engine() %>% 
+  rpart.plot()
+
+# RMSE of train_data
+housing_train_decision_tree_pred_rmse <- 
+  predict(housing_decision_tree_fit, train_data) %>% 
+  bind_cols(train_data) %>% 
+  rmse(median_house_value, .pred)
+
+housing_train_decision_tree_pred_rmse
+
+```
+
+The score of RMSE is a bit better but it is not a huge difference. So far I would say without going too deep that both models with their actual configurations are underfitting.
+
+
+#### Random Forrest
+
+Lets try a more complex model, a Random Forrest. This model train many Decision Tress, each one is given a  a random subsets of the features, then it averages out their predictions.
+
+
+```{r, message=FALSE, warning=FALSE}
+
+# Model
+housing_random_forrest_mod <- 
+  rand_forest() %>% 
+  set_engine("ranger") %>% 
+  set_mode("regression")
+
+# Workflow
+housing_random_forrest_mod_workflow <- 
+  workflow() %>% 
+  add_model(housing_random_forrest_mod) %>% 
+  add_recipe(housing_recipe)
+
+# Fit Model
+housing_random_forrest_fit <- 
+  housing_random_forrest_mod_workflow %>% 
+  fit(data = train_data)
+
+# Plot Decision Tree
+#housing_random_forrest_fit %>% 
+#  extract_fit_engine() %>% 
+#  rpart.plot()
+
+# RMSE of train_data
+housing_random_forrest_pred_rmse <- 
+  predict(housing_random_forrest_fit, train_data) %>% 
+  bind_cols(train_data) %>% 
+  rmse(median_house_value, .pred)
+
+housing_random_forrest_pred_rmse
+
+```
+
+The score of RMSE is a bit better but it is not a huge difference. So far I would say without going too deep that both models with their actual configurations are underfitting.
+
+
+
+
+
+
+
+
+``` {r, eval=FALSE}
+
+# Model
+housing_decision_tree_mod <- 
+   decision_tree(cost_complexity = tune()) %>% 
+   set_engine("rpart") %>% 
+   set_mode("regression")
+
+# Workflow
+housing_decision_tree_workflow <- 
+  workflow() %>% 
+  add_model(housing_decision_tree_mod) %>% 
+  add_recipe(housing_recipe)
+
+# Folds for the Hyperparameter tuning
+housing_decision_tree_fold <- vfold_cv(train_data)
+
+housing_decision_tree_param_grid <- grid_regular(cost_complexity(range = c(-5, -1)), levels = 10)
+
+tune_res <- tune_grid(
+  housing_decision_tree_workflow, 
+  resamples = housing_decision_tree_fold, 
+  grid = housing_decision_tree_param_grid
+)
+
+autoplot(tune_res)
+
+# Fit Model
+housing_decision_tree_fit <- 
+  housing_decision_tree_workflow %>% 
+  fit(data = train_data)
+
+# Plot Decision Tree
+housing_decision_tree_fit %>% 
+  extract_fit_engine() %>% 
+  rpart.plot()
+
+# RMSE of train_data
+housing_train_decision_tree_pred_rmse <- 
+  predict(housing_decision_tree_fit, train_data) %>% 
+  bind_cols(train_data) %>% 
+  rmse(median_house_value, .pred)
+
+housing_train_decision_tree_pred_rmse
+
+```
+
+
+```{r, eval=FALSE}
+housing_recipe <- 
+  recipe(median_house_value ~ ., data = train_data) %>%  # Create recipe
+  step_impute_mean(total_bedrooms) %>% 
+  # step_mutate_at(total_bedrooms, fn = ~ replace_na(.,median(., na.rm = TRUE))) %>% 
+  step_mutate_at(where(is.character), fn = as.factor)
+
+
+tt2 <- housing_recipe %>% prep() %>% juice()
+
+tt2_a <- filter_all(tt2, any_vars(is.na(.)))
+```  
+
+
+
+
